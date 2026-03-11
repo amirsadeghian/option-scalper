@@ -44,7 +44,7 @@ class RiskManager:
 
         elapsed = time.time() - self.last_trade_time
         if elapsed < COOLDOWN_SECONDS:
-            logger.debug(f"Risk: cooldown ({{elapsed:.1f}}s / {{COOLDOWN_SECONDS}}s).")
+            logger.debug(f"Risk: cooldown ({elapsed:.1f}s / {COOLDOWN_SECONDS}s).")
             return False
 
         return True
@@ -55,8 +55,8 @@ class RiskManager:
         self.daily_pnl += pnl
         self.last_trade_time = time.time()
         logger.info(
-            f"Risk update: trades={{self.trade_count}}, "
-            f"daily_pnl=${{self.daily_pnl:.2f}}"
+            f"Risk update: trades={self.trade_count}, "
+            f"daily_pnl=${self.daily_pnl:.2f}"
         )
 
     def should_force_close(self, entry_time: float) -> bool:

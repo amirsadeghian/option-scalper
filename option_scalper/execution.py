@@ -15,7 +15,7 @@ from logger_setup import TradeJournal
 logger = logging.getLogger("scalper.execution")
 
 
-dataclass
+@dataclass
 class Position:
     """Tracks an open position."""
     contract: Contract
@@ -49,8 +49,8 @@ class ExecutionEngine:
 
             trade = self.ib.placeOrder(contract, order)
             logger.info(
-                f"BUY order placed: {{contract.localSymbol}} "
-                f"@ {{mid_price:.2f}} (size={{ORDER_SIZE}})"
+                f"BUY order placed: {contract.localSymbol} "
+                f"@ {mid_price:.2f} (size={ORDER_SIZE})"
             )
 
             self.ib.sleep(1)
@@ -76,18 +76,18 @@ class ExecutionEngine:
                     price=fill_price,
                     reason="entry_signal"
                 )
-                logger.info(f"FILLED BUY: {{contract.localSymbol}} @ {{fill_price:.2f}}")
+                logger.info(f"FILLED BUY: {contract.localSymbol} @ {fill_price:.2f}")
                 return pos
             else:
                 self.ib.cancelOrder(order)
                 logger.warning(
-                    f"BUY not filled, cancelled: {{contract.localSymbol}} "
-                    f"status={{trade.orderStatus.status}}"
+                    f"BUY not filled, cancelled: {contract.localSymbol} "
+                    f"status={trade.orderStatus.status}"
                 )
                 return None
 
         except Exception as e:
-            logger.error(f"Error placing BUY order: {{e}}")
+            logger.error(f"Error placing BUY order: {e}")
             return None
 
     def sell(self, position: Position, current_mid: float, reason: str = "") -> float:
@@ -104,8 +104,8 @@ class ExecutionEngine:
 
             trade = self.ib.placeOrder(contract, order)
             logger.info(
-                f"SELL order placed: {{contract.localSymbol}} "
-                f"@ ~{{current_mid:.2f}} reason={{reason}}"
+                f"SELL order placed: {contract.localSymbol} "
+                f"@ ~{current_mid:.2f} reason={reason}"
             )
 
             self.ib.sleep(1)
@@ -127,17 +127,17 @@ class ExecutionEngine:
                     reason=reason
                 )
                 logger.info(
-                    f"FILLED SELL: {{contract.localSymbol}} @ {{fill_price:.2f}} "
-                    f"PnL=${{pnl:.2f}} ({{reason}})"
+                    f"FILLED SELL: {contract.localSymbol} @ {fill_price:.2f} "
+                    f"PnL=${pnl:.2f} ({reason})"
                 )
                 return pnl
             else:
                 self.ib.cancelOrder(order)
-                logger.warning(f"SELL not filled, will retry: {{contract.localSymbol}}")
+                logger.warning(f"SELL not filled, will retry: {contract.localSymbol}")
                 return 0.0
 
         except Exception as e:
-            logger.error(f"Error placing SELL order: {{e}}")
+            logger.error(f"Error placing SELL order: {e}")
             return 0.0
 
     def _remove_position(self, con_id: str):

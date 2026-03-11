@@ -9,13 +9,13 @@ from typing import Optional, List
 from data_feed import OptionQuote
 from config import (
     SPREAD_THRESHOLD, MOMENTUM_THRESHOLD,
-    MOMENTUM_WINDOW, MIN_VOLUME, PROFIT_TARGET, STOP_LOSS
+    MOMENTUM_WINDOW, MIN_VOLUME, PROFIT_TARGET, STOP_LOSS, MIN_GAMMA
 )
 
 logger = logging.getLogger("scalper.signals")
 
 
-dataclass
+@dataclass
 class Signal:
     """Represents a trading signal."""
     action: str
@@ -57,25 +57,31 @@ class SignalEngine:
         if not (self.min_delta <= abs(q.delta) <= self.max_delta):
             return None
 
+        # Gamma filter: require meaningful convexity at entry
+        if q.gamma < MIN_GAMMA:
+            return None
+
         momentum = self._calc_momentum(q)
         if momentum < MOMENTUM_THRESHOLD:
             return None
 
-        spread_score = max(0, 1 - q.spread / SPREAD_THRESHOLD)
+        spread_score   = max(0, 1 - q.spread / SPREAD_THRESHOLD)
         momentum_score = min(1, momentum / (MOMENTUM_THRESHOLD * 3))
-        strength = (spread_score + momentum_score) / 2
+        gamma_score    = min(1, q.gamma / (MIN_GAMMA * 5))   # peaks at 5x min gamma
+        strength       = (spread_score + momentum_score + gamma_score) / 3
 
+        direction = "CALL" if q.delta > 0 else "PUT"
         logger.info(
-            f"ENTRY SIGNAL: {{q.contract.localSymbol}} | "
-            f"mid={{q.mid:.2f}} spread={{q.spread:.3f}} "
-            f"momentum={{momentum:.4f}} delta={{q.delta:.3f}} "
-            f"strength={{strength:.2f}}"
+            f"ENTRY SIGNAL [{direction}]: {q.contract.localSymbol} | "
+            f"mid={q.mid:.2f} spread={q.spread:.3f} "
+            f"momentum={momentum:.4f} delta={q.delta:.3f} "
+            f"gamma={q.gamma:.4f} strength={strength:.2f}"
         )
 
         return Signal(
             action="BUY",
             quote=q,
-            reason=f"spread={{q.spread:.3f}}, momentum={{momentum:.4f}}",
+            reason=f"spread={q.spread:.3f}, momentum={momentum:.4f}, gamma={q.gamma:.4f}",
             strength=strength
         )
 
@@ -97,7 +103,7 @@ class SignalEngine:
             return Signal(
                 action="SELL",
                 quote=current_quote,
-                reason=f"profit_target (pnl={{pnl:.3f}})",
+                reason=f"profit_target (pnl={pnl:.3f})",
                 strength=1.0
             )
 
@@ -105,7 +111,7 @@ class SignalEngine:
             return Signal(
                 action="SELL",
                 quote=current_quote,
-                reason=f"stop_loss (pnl={{pnl:.3f}})",
+                reason=f"stop_loss (pnl={pnl:.3f})",
                 strength=1.0
             )
 

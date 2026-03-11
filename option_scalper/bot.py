@@ -5,6 +5,7 @@ Main bot orchestrator - ties all components together into the scalping loop.
 import time
 import signal
 import logging
+from datetime import date
 
 from connection import IBConnection
 from data_feed import DataFeed
@@ -50,9 +51,17 @@ class OptionScalperBot:
     def _main_loop(self):
         """Core scalping loop."""
         logger.info("Entering main scalping loop...")
+        current_date = date.today()
 
         while self._running:
             try:
+                # Reset daily counters at the start of each new trading day
+                today = date.today()
+                if today != current_date:
+                    self.risk.reset_daily()
+                    current_date = today
+                    logger.info(f"New trading day {today} -- daily counters reset.")
+
                 self.ib.sleep(0.1)
                 self.data_feed.update()
                 self._check_exits()
@@ -63,7 +72,7 @@ class OptionScalperBot:
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                logger.error(f"Error in main loop: {{e}}", exc_info=True)
+                logger.error(f"Error in main loop: {e}", exc_info=True)
                 self.ib.sleep(1)
 
         self._shutdown()
@@ -82,8 +91,8 @@ class OptionScalperBot:
         if self.execution.get_position(con_id):
             return
 
-        logger.info(f"Acting on signal: {{best.quote.contract.localSymbol}} "
-                     f"strength={{best.strength:.2f}}")
+        logger.info(f"Acting on signal: {best.quote.contract.localSymbol} "
+                     f"strength={best.strength:.2f}")
 
         position = self.execution.buy(best.quote.contract, best.quote.mid)
         if position:
@@ -113,7 +122,7 @@ class OptionScalperBot:
 
             if self.risk.should_force_close(position.entry_time):
                 logger.warning(
-                    f"Force closing {{position.contract.localSymbol}} "
+                    f"Force closing {position.contract.localSymbol} "
                     f"(held too long)"
                 )
                 pnl = self.execution.sell(

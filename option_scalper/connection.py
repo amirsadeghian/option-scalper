@@ -27,11 +27,11 @@ class IBConnection:
         self._reconnect()
 
     def _on_error(self, reqId, errorCode, errorString, contract):
-        logger.error(f"IB Error {errorCode}: {errorString} (reqId={{reqId}})")
+        logger.error(f"IB Error {errorCode}: {errorString} (reqId={reqId})")
 
     def connect(self):
         """Establish connection to TWS / IB Gateway."""
-        logger.info(f"Connecting to IBKR at {{TWS_HOST}}:{{TWS_PORT}}...")
+        logger.info(f"Connecting to IBKR at {TWS_HOST}:{TWS_PORT}...")
         self.ib.connect(TWS_HOST, TWS_PORT, clientId=CLIENT_ID)
         logger.info("Connected to IBKR successfully.")
         return self.ib
@@ -39,14 +39,14 @@ class IBConnection:
     def _reconnect(self, max_retries: int = 5, delay: int = 5):
         for attempt in range(1, max_retries + 1):
             try:
-                logger.info(f"Reconnect attempt {{attempt}}/{{max_retries}}...")
+                logger.info(f"Reconnect attempt {attempt}/{max_retries}...")
                 self.ib.disconnect()
                 time.sleep(delay)
                 self.ib.connect(TWS_HOST, TWS_PORT, clientId=CLIENT_ID)
                 logger.info("Reconnected successfully.")
                 return
             except Exception as e:
-                logger.error(f"Reconnect failed: {{e}}")
+                logger.error(f"Reconnect failed: {e}")
                 time.sleep(delay * attempt)
         logger.critical("Max reconnect attempts reached. Shutting down.")
         raise ConnectionError("Could not reconnect to IBKR.")

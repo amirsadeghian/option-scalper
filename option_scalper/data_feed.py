@@ -11,14 +11,14 @@ from ib_insync import IB, Stock, Option, Ticker, Contract
 import ib_insync.util as util
 
 from config import (
-    SYMBOL, EXCHANGE, CURRENCY, RIGHT,
+    SYMBOL, EXCHANGE, CURRENCY, RIGHTS,
     NUM_STRIKES, MOMENTUM_WINDOW
 )
 
 logger = logging.getLogger("scalper.data")
 
 
-dataclass
+@dataclass
 class OptionQuote:
     """Snapshot of an option's live market data."""
     contract: Contract
@@ -54,7 +54,7 @@ class DataFeed:
 
         [stock_ticker] = self.ib.reqTickers(self.underlying)
         underlying_price = stock_ticker.marketPrice()
-        logger.info(f"Underlying {{SYMBOL}} price: {{underlying_price:.2f}}")
+        logger.info(f"Underlying {SYMBOL} price: {underlying_price:.2f}")
 
         chains = self.ib.reqSecDefOptParams(
             SYMBOL, "", self.underlying.secType, self.underlying.conId
@@ -66,7 +66,7 @@ class DataFeed:
 
         expirations = sorted(chain.expirations)
         nearest_expiry = expirations[0]
-        logger.info(f"Using expiry: {{nearest_expiry}}")
+        logger.info(f"Using expiry: {nearest_expiry}")
 
         strikes = sorted(chain.strikes)
         atm_idx = min(range(len(strikes)),
@@ -75,15 +75,16 @@ class DataFeed:
         end = min(len(strikes), atm_idx + NUM_STRIKES // 2 + 1)
         selected_strikes = strikes[start:end]
 
-        logger.info(f"Selected strikes: {{selected_strikes}}")
+        logger.info(f"Selected strikes: {selected_strikes}")
 
         self.option_contracts = []
         for strike in selected_strikes:
-            opt = Option(SYMBOL, nearest_expiry, strike, RIGHT, EXCHANGE)
-            self.option_contracts.append(opt)
+            for right in RIGHTS:        # "C" and "P" — bidirectional
+                opt = Option(SYMBOL, nearest_expiry, strike, right, EXCHANGE)
+                self.option_contracts.append(opt)
 
         self.ib.qualifyContracts(*self.option_contracts)
-        logger.info(f"Qualified {{len(self.option_contracts)}} option contracts.")
+        logger.info(f"Qualified {len(self.option_contracts)} option contracts.")
 
     def subscribe(self):
         """Subscribe to real-time market data for all option contracts."""
@@ -96,7 +97,7 @@ class DataFeed:
             self.tickers[key] = ticker
             self.quotes[key] = OptionQuote(contract=contract)
 
-        logger.info(f"Subscribed to {{len(self.tickers)}} option data streams.")
+        logger.info(f"Subscribed to {len(self.tickers)} option data streams.")
 
     def update(self):
         """Pull latest data from tickers into OptionQuote objects."""

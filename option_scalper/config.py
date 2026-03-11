@@ -12,14 +12,15 @@ CLIENT_ID = 1
 SYMBOL = "SPY"           # Underlying symbol
 EXCHANGE = "SMART"
 CURRENCY = "USD"
-RIGHT = "C"              # "C" for calls, "P" for puts
-NUM_STRIKES = 5          # Number of ATM strikes to monitor
+RIGHTS = ["C", "P"]      # Trade both calls AND puts (bidirectional)
+NUM_STRIKES = 5          # Number of ATM strikes to monitor per side
 
 # ── Signal Parameters ────────────────────────────────────────
 SPREAD_THRESHOLD = 0.05      # Max bid-ask spread to enter ($)
 MOMENTUM_WINDOW = 10         # Number of ticks for momentum calc
 MOMENTUM_THRESHOLD = 0.03    # Min price move to trigger entry ($)
 MIN_VOLUME = 50              # Minimum volume filter
+MIN_GAMMA = 0.03             # Min gamma — ensures meaningful convexity at entry
 
 # ── Execution ────────────────────────────────────────────────
 ORDER_SIZE = 1               # Number of contracts per trade
