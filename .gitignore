@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.env/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Bot output
+scalper.log
+trades.csv
+
+# OS
+.DS_Store
+Thumbs.db
