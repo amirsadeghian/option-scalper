@@ -62,8 +62,9 @@ MAX_POSITION_HOLD_BARS = 24      # 24 x 5-min bars = 120 min
 SLIPPAGE               = 0.01    # limit offset per side
 
 # Risk params
+STARTING_BALANCE   = 26_000.0   # Paper account starting balance ($)
+MAX_DAILY_LOSS_PCT = 0.10        # Max daily loss as % of current balance
 MAX_POSITIONS      = 3
-MAX_DAILY_LOSS     = 200.0
 MAX_TRADES_PER_DAY = 50
 COOLDOWN_BARS      = 1           # 1 bar = 5-min cooldown (mirrors 5s in live bot)
 
@@ -246,13 +247,15 @@ class ScalperBacktest:
         trades: list[dict] = []
 
         # Risk state (mirrors RiskManager)
-        daily_pnl      = 0.0
-        trade_count    = 0
-        last_trade_bar = -999
-        halted         = False
+        current_balance  = float(STARTING_BALANCE)
+        daily_loss_limit = current_balance * MAX_DAILY_LOSS_PCT
+        daily_pnl        = 0.0
+        trade_count      = 0
+        last_trade_bar   = -999
+        halted           = False
         current_day: Optional[date] = None
 
-        # Position state: {(strike, right) -> (entry_price, entry_bar, entry_ts)}
+        # Position state: {(strike, right) -> (entry_price, entry_bar, entry_ts, order_size)}
         positions: dict[tuple, tuple] = {}
 
         # Per-(strike, right) quote history
@@ -268,10 +271,11 @@ class ScalperBacktest:
             # Reset daily counters on new trading day
             today = ts.date()
             if today != current_day:
-                daily_pnl   = 0.0
-                trade_count = 0
-                halted      = False
-                current_day = today
+                daily_pnl        = 0.0
+                trade_count      = 0
+                halted           = False
+                daily_loss_limit = current_balance * MAX_DAILY_LOSS_PCT
+                current_day      = today
 
             # Determine the 5 near-ATM strikes x 2 rights = 10 contracts
             atm     = round(S)
@@ -303,7 +307,7 @@ class ScalperBacktest:
 
             # ---- Check exits on all open positions ----------------------
             for key in list(positions.keys()):
-                entry_price, entry_bar, entry_ts = positions[key]
+                entry_price, entry_bar, entry_ts, order_size = positions[key]
                 q = quote_history.get(key)
                 if not q:
                     continue
@@ -318,10 +322,11 @@ class ScalperBacktest:
                     K, right    = key
                     exit_price  = q.mid
                     pnl_per_sh  = exit_price - entry_price - 2 * SLIPPAGE
-                    pnl_dollar  = round(pnl_per_sh * 100, 2)
-                    daily_pnl  += pnl_dollar
-                    trade_count += 1
-                    last_trade_bar = bar_idx
+                    pnl_dollar  = round(pnl_per_sh * 100 * order_size, 2)
+                    daily_pnl      += pnl_dollar
+                    current_balance += pnl_dollar
+                    trade_count    += 1
+                    last_trade_bar  = bar_idx
 
                     trades.append({
                         "entry_time":   entry_ts,
@@ -335,6 +340,40 @@ class ScalperBacktest:
                                         if entry_price > 0 else 0.0,
                         "exit_reason":  exit_reason,
                         "underlying":   round(S, 2),
+                        "order_size":   order_size,
+                    })
+                    del positions[key]
+
+            # ---- EOD force-close: no overnight positions ----------------
+            is_last_bar = (
+                bar_idx + 1 >= len(bars)
+                or bars[bar_idx + 1][0].date() != today
+            )
+            if is_last_bar and positions:
+                for key in list(positions.keys()):
+                    entry_price, entry_bar, entry_ts, order_size = positions[key]
+                    q          = quote_history.get(key)
+                    K, right   = key
+                    exit_price = q.mid if (q and q.mid > 0) else entry_price
+                    pnl_per_sh = exit_price - entry_price - 2 * SLIPPAGE
+                    pnl_dollar = round(pnl_per_sh * 100 * order_size, 2)
+                    daily_pnl       += pnl_dollar
+                    current_balance += pnl_dollar
+                    trade_count     += 1
+                    last_trade_bar   = bar_idx
+                    trades.append({
+                        "entry_time":   entry_ts,
+                        "exit_time":    ts,
+                        "right":        right,
+                        "strike":       K,
+                        "entry_option": round(entry_price, 2),
+                        "exit_option":  round(exit_price,  2),
+                        "pnl_dollar":   pnl_dollar,
+                        "pnl_pct":      round(pnl_per_sh / entry_price * 100, 1)
+                                        if entry_price > 0 else 0.0,
+                        "exit_reason":  "eod_close",
+                        "underlying":   round(S, 2),
+                        "order_size":   order_size,
                     })
                     del positions[key]
 
@@ -345,11 +384,11 @@ class ScalperBacktest:
             can_trade = (
                 not halted
                 and open_count < MAX_POSITIONS
-                and daily_pnl > -MAX_DAILY_LOSS
+                and daily_pnl > -daily_loss_limit
                 and trade_count < MAX_TRADES_PER_DAY
                 and cooldown_ok
             )
-            if daily_pnl <= -MAX_DAILY_LOSS or trade_count >= MAX_TRADES_PER_DAY:
+            if daily_pnl <= -daily_loss_limit or trade_count >= MAX_TRADES_PER_DAY:
                 halted = True
 
             # ---- Scan entries (mirrors bot._check_entries()) ------------
@@ -369,9 +408,11 @@ class ScalperBacktest:
 
                 if candidates:
                     _, best_key, best_mid = max(candidates, key=lambda x: x[0])
-                    entry_price        = best_mid + SLIPPAGE
-                    positions[best_key] = (entry_price, bar_idx, ts)
-                    last_trade_bar     = bar_idx
+                    entry_price = best_mid + SLIPPAGE
+                    opt_cost    = max(entry_price, 0.50) * 100
+                    order_size  = max(1, int(current_balance / MAX_POSITIONS / opt_cost))
+                    positions[best_key] = (entry_price, bar_idx, ts, order_size)
+                    last_trade_bar = bar_idx
 
         return trades
 
@@ -415,11 +456,16 @@ class ScalperBacktest:
         print(f"  Exit           : TP +${PROFIT_TARGET}  "
               f"/ SL -${STOP_LOSS}  / hold>{MAX_POSITION_HOLD_BARS} bars")
         print(f"  Slippage       : ${SLIPPAGE}/side")
+        print(f"  Starting bal.  : ${STARTING_BALANCE:>10,.2f}")
+        print(f"  Daily loss cap : {MAX_DAILY_LOSS_PCT*100:.0f}% of equity")
         print(SEP)
+        ending_balance = STARTING_BALANCE + total_pnl
         print(f"  Total trades   : {total}")
         print(f"  Win rate       : {w_rate:.1f}%  "
               f"({len(winners)} wins  /  {len(losers)} losses)")
-        print(f"  Total P&L      : ${total_pnl:>8,.2f}")
+        print(f"  Total P&L      : ${total_pnl:>10,.2f}")
+        print(f"  Ending balance : ${ending_balance:>10,.2f}  "
+              f"({(ending_balance/STARTING_BALANCE - 1)*100:+.0f}%)")
         print(f"  Avg win        : ${avg_win:>8,.2f}")
         print(f"  Avg loss       : ${avg_loss:>8,.2f}")
         print(f"  Profit factor  : {pf:.2f}")
