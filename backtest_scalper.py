@@ -54,6 +54,8 @@ MOMENTUM_THRESHOLD = 0.03
 MIN_DELTA          = 0.20
 MAX_DELTA          = 0.70
 MIN_GAMMA          = 0.03   # minimum gamma for entry
+MAX_ENTRY_PRICE    = 1.50   # skip options priced above this at entry ($)
+TRADE_HOURS        = {9, 10, 14, 15}  # ET hours allowed for new entries (block 11-13 chop)
 
 # Exit params
 PROFIT_TARGET          = 0.10    # $ per share
@@ -209,26 +211,65 @@ class ScalperBacktest:
                 log.error(f"Connection failed: {exc}  -- retrying in 10 s ...")
                 await asyncio.sleep(10)
 
-    async def fetch_spy_bars(self) -> pd.DataFrame:
+    async def fetch_spy_bars(self, total_days: int = 365) -> pd.DataFrame:
+        """Fetch up to `total_days` of 5-min SPY bars in 30-day chunks.
+
+        IB limits 5-min bar requests to ~60 days per call.  We use 30-day
+        chunks with a 12-second pacing delay between requests to stay safely
+        within IB's 60-requests-per-10-minutes rule.
+        """
         spy   = Stock("SPY", "SMART", "USD")
         [spy] = await self.ib.qualifyContractsAsync(spy)
-        log.info("Fetching 30 D of 5-min SPY bars from IB ...")
-        bars  = await self.ib.reqHistoricalDataAsync(
-            spy, endDateTime="", durationStr="30 D",
-            barSizeSetting="5 mins", whatToShow="TRADES",
-            useRTH=True, formatDate=1,
-        )
-        if not bars:
+
+        n_chunks = (total_days + 29) // 30          # ceiling division
+        all_dfs: list[pd.DataFrame] = []
+        end_dt  = ""                                 # empty = right now
+
+        for i in range(n_chunks):
+            log.info(f"Fetching chunk {i + 1}/{n_chunks}  "
+                     f"(end={end_dt or 'now'}) ...")
+            try:
+                bars = await self.ib.reqHistoricalDataAsync(
+                    spy, endDateTime=end_dt, durationStr="30 D",
+                    barSizeSetting="5 mins", whatToShow="TRADES",
+                    useRTH=True, formatDate=1,
+                )
+            except Exception as exc:
+                log.warning(f"Chunk {i + 1} failed ({exc}) — stopping early.")
+                break
+
+            if not bars:
+                log.warning(f"No bars returned for chunk {i + 1} — stopping early.")
+                break
+
+            df_chunk = util.df(bars)
+            df_chunk.columns = [c.lower() for c in df_chunk.columns]
+            df_chunk["date"] = pd.to_datetime(df_chunk["date"])
+            if df_chunk["date"].dt.tz is None:
+                df_chunk["date"] = df_chunk["date"].dt.tz_localize(ET_TZ)
+            else:
+                df_chunk["date"] = df_chunk["date"].dt.tz_convert(ET_TZ)
+
+            all_dfs.append(df_chunk)
+            earliest = df_chunk["date"].min()
+            log.info(f"  {len(df_chunk)} bars  "
+                     f"{earliest}  ->  {df_chunk['date'].max()}")
+
+            # Move end pointer one minute before the earliest bar in this chunk
+            end_dt = (earliest - timedelta(minutes=1)).strftime("%Y%m%d %H:%M:%S")
+
+            if i < n_chunks - 1:
+                log.info("  Pausing 12 s (IB pacing) ...")
+                await asyncio.sleep(12)
+
+        if not all_dfs:
             raise RuntimeError("IB returned no bars.")
-        df = util.df(bars)
-        df.columns = [c.lower() for c in df.columns]
-        df["date"] = pd.to_datetime(df["date"])
-        if df["date"].dt.tz is None:
-            df["date"] = df["date"].dt.tz_localize(ET_TZ)
-        else:
-            df["date"] = df["date"].dt.tz_convert(ET_TZ)
+
+        # Merge chunks (they arrive newest-first) → sort ascending
+        df = pd.concat(reversed(all_dfs))
+        df = df.drop_duplicates(subset=["date"]).sort_values("date")
         df.set_index("date", inplace=True)
-        log.info(f"  {len(df)} bars  |  {df.index[0]}  ->  {df.index[-1]}")
+        log.info(f"Total: {len(df)} bars  |  {df.index[0]}  ->  {df.index[-1]}")
         return df
 
     def simulate(self, df: pd.DataFrame) -> list[dict]:
@@ -383,6 +424,8 @@ class ScalperBacktest:
 
             can_trade = (
                 not halted
+                and not is_last_bar
+                and ts.hour in TRADE_HOURS
                 and open_count < MAX_POSITIONS
                 and daily_pnl > -daily_loss_limit
                 and trade_count < MAX_TRADES_PER_DAY
@@ -403,7 +446,7 @@ class ScalperBacktest:
                         if not q:
                             continue
                         strength = evaluate_entry(q)
-                        if strength is not None:
+                        if strength is not None and q.mid <= MAX_ENTRY_PRICE:
                             candidates.append((strength, key, q.mid))
 
                 if candidates:
@@ -452,7 +495,8 @@ class ScalperBacktest:
         print(f"  IB bars        : {len(df)}")
         print(f"  Signal         : Spread<=${SPREAD_THRESHOLD}  "
               f"Delta [{MIN_DELTA},{MAX_DELTA}]  Gamma>={MIN_GAMMA}  "
-              f"Momentum>=${MOMENTUM_THRESHOLD} over {MOMENTUM_WINDOW} bars")
+              f"Momentum>=${MOMENTUM_THRESHOLD} over {MOMENTUM_WINDOW} bars  "
+              f"EntryPrice<=${MAX_ENTRY_PRICE}  Hours={sorted(TRADE_HOURS)}")
         print(f"  Exit           : TP +${PROFIT_TARGET}  "
               f"/ SL -${STOP_LOSS}  / hold>{MAX_POSITION_HOLD_BARS} bars")
         print(f"  Slippage       : ${SLIPPAGE}/side")
@@ -514,7 +558,7 @@ class ScalperBacktest:
     async def run(self):
         try:
             await self.connect()
-            df     = await self.fetch_spy_bars()
+            df     = await self.fetch_spy_bars(total_days=365)
             trades = self.simulate(df)
             self.print_results(trades, df)
         finally:
